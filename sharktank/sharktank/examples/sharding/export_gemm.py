@@ -5,6 +5,7 @@ import torch
 from torch import Tensor
 from sharktank import ops
 from iree.turbine import aot
+from sharktank.types.tensors import ReplicatedTensor, SplitPrimitiveTensor
 
 
 def export_gemm(
@@ -18,25 +19,26 @@ def export_gemm(
 ):
     class GemmModule(torch.nn.Module):
         def forward(self, *args, **kwargs):
+            kwargs["a"] = ops.reshard_split(kwargs["a"], dim=0, count=device_count)
+            kwargs["b"] = ops.replicate(kwargs["b"], count=device_count)
+            kwargs["c"] = ops.reshard_split(kwargs["c"], dim=0, count=device_count)
             return ops.gemm(*args, **kwargs)
 
     a = torch.empty(m, k, dtype=torch.float32)
     b = torch.empty(k, n, dtype=torch.float32)
     c = torch.empty(m, n, dtype=torch.float32)
-    sharded_a = ops.reshard_split(a, dim=0, count=device_count)
-    sharded_b = ops.replicate(b, count=device_count)
-    sharded_c = ops.reshard_split(c, dim=0, count=device_count)
+
     gemm_module = GemmModule()
     kwargs = {
-        "a": sharded_a,
-        "b": sharded_b,
-        "c": sharded_c,
+        "a": a,
+        "b": b,
+        "c": c,
     }
     # Need to pass alpha and beta not as numbers, but as tensors since
     # the IREE FX importer does not support ConstantArgument.
     if with_alpha:
         kwargs["alpha"] = torch.tensor(2.0, dtype=torch.float32)
-    if with_alpha:
+    if with_beta:
         kwargs["beta"] = torch.tensor(3.0, dtype=torch.float32)
     torch_exported = torch.export.export(gemm_module, args=(), kwargs=kwargs)
     export_output = aot.export(torch_exported)
